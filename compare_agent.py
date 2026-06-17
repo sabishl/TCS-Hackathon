@@ -251,8 +251,17 @@ def _compare_matched_section(
         doc_a_text=text_a,
         doc_b_text=text_b,
     )
+    tokens_used = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     try:
-        response = llm.invoke(prompt_text)
+        from config import TokenTrackerCallback
+        tracker = TokenTrackerCallback()
+        response = llm.invoke(prompt_text, config={"callbacks": [tracker]})
+        
+        tokens_used = {
+            "prompt_tokens": tracker.prompt_tokens,
+            "completion_tokens": tracker.completion_tokens,
+            "total_tokens": tracker.total_tokens
+        }
         result = _parse_json_response(response.content)
     except Exception as exc:
         result = {
@@ -276,6 +285,7 @@ def _compare_matched_section(
     result["section"] = heading
     result["similarity_score"] = round(sim, 4)
     result["table_changed"] = bool(result.get("table_changed")) or tables_changed
+    result["tokens"] = tokens_used
     return result
 
 
@@ -300,32 +310,41 @@ def compare_sections(
     skipped = 0
     llm_calls = 0
 
-    from langchain_community.callbacks import get_openai_callback
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_tokens = 0
 
-    with get_openai_callback() as cb:
-        for key in exact_keys:
-            a = a_map[key]
-            b = b_map[key]
-            sim = _cosine_sim(_section_text(a, limit=6000), _section_text(b, limit=6000))
-            result = _compare_matched_section(llm, a.get("heading", key), a, b, sim)
-            results.append(result)
-            if result["status"] == "unchanged":
-                skipped += 1
-            else:
-                llm_calls += 1
-
-        for a_key, b_key, sim in fuzzy_matches:
-            a = a_map[a_key]
-            b = b_map[b_key]
-            heading = f"{a.get('heading', a_key)} -> {b.get('heading', b_key)}"
-            result = _compare_matched_section(llm, heading, a, b, sim, heading_changed=True)
-            results.append(result)
+    for key in exact_keys:
+        a = a_map[key]
+        b = b_map[key]
+        sim = _cosine_sim(_section_text(a, limit=6000), _section_text(b, limit=6000))
+        result = _compare_matched_section(llm, a.get("heading", key), a, b, sim)
+        results.append(result)
+        if result["status"] == "unchanged":
+            skipped += 1
+        else:
             llm_calls += 1
+            toks = result.get("tokens", {})
+            total_prompt_tokens += toks.get("prompt_tokens", 0)
+            total_completion_tokens += toks.get("completion_tokens", 0)
+            total_tokens += toks.get("total_tokens", 0)
+
+    for a_key, b_key, sim in fuzzy_matches:
+        a = a_map[a_key]
+        b = b_map[b_key]
+        heading = f"{a.get('heading', a_key)} -> {b.get('heading', b_key)}"
+        result = _compare_matched_section(llm, heading, a, b, sim, heading_changed=True)
+        results.append(result)
+        llm_calls += 1
+        toks = result.get("tokens", {})
+        total_prompt_tokens += toks.get("prompt_tokens", 0)
+        total_completion_tokens += toks.get("completion_tokens", 0)
+        total_tokens += toks.get("total_tokens", 0)
 
     st.session_state["comparison_tokens"] = {
-        "prompt_tokens": cb.prompt_tokens,
-        "completion_tokens": cb.completion_tokens,
-        "total_tokens": cb.total_tokens,
+        "prompt_tokens": total_prompt_tokens,
+        "completion_tokens": total_completion_tokens,
+        "total_tokens": total_tokens,
     }
 
     for key in unmatched_b:

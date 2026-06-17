@@ -649,9 +649,15 @@ html, body, [class*="css"] {
 # ══════════════════════════════════════════════════════════════════════════════
 #  NAV BAR
 # ══════════════════════════════════════════════════════════════════════════════
-if config.ENV == "amd_cloud":
+# Determine dynamic backend to show in top status badge
+current_env = config.ENV
+if "inference_env_select" in st.session_state:
+    selected = st.session_state["inference_env_select"]
+    current_env = "groq" if "Groq" in selected else "local"
+
+if current_env == "amd_cloud":
     system_status_html = "<span class='system-badge'><span class='system-badge-dot'></span>System Ready (AMD Instinct MI300X)</span>"
-elif config.ENV == "local":
+elif current_env == "local":
     system_status_html = "<span class='system-badge'><span class='system-badge-dot'></span>System Ready (Ollama Local)</span>"
 else:
     system_status_html = (
@@ -867,7 +873,58 @@ if not st.session_state.get("processed"):
                 st.session_state.pop("new_doc_size", None)
                 st.rerun()
 
-    st.markdown("<div style='margin-top:40px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
+    
+    # ── Inference settings container ──────────────────────────────────────────
+    with st.container():
+        st.markdown("""
+        <div style='background:#FFFFFF; border:1px solid #E2E8F0; border-radius:16px; padding:20px 24px; margin-bottom:24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);'>
+            <div style='font-family:Outfit,sans-serif; font-size:1.1rem; font-weight:700; color:#0F172A; margin-bottom:6px;'>
+                ⚙️ LLM Inference Engine Config
+            </div>
+            <div style='font-size:0.85rem; color:#64748B; margin-bottom:16px;'>
+                Select the runtime environment for analysis. Groq runs fast on the cloud, while Local LLaMA runs on your local machine using Ollama.
+            </div>
+        """, unsafe_allow_html=True)
+        
+        cfg_col1, cfg_col2 = st.columns([1.5, 2.5])
+        with cfg_col1:
+            selected_env = st.selectbox(
+                "Inference Engine",
+                options=["Groq Cloud (Fast)", "Local LLaMA (Ollama)"],
+                index=0 if config.ENV == "groq" else 1,
+                key="inference_env_select",
+                label_visibility="visible"
+            )
+            # Update config ENV dynamically
+            if selected_env == "Groq Cloud (Fast)":
+                config.ENV = "groq"
+            else:
+                config.ENV = "local"
+                
+        with cfg_col2:
+            if config.ENV == "groq":
+                api_key_val = st.text_input(
+                    "Groq API Key",
+                    value=st.session_state.get("groq_api_key", "") if st.session_state.get("groq_api_key") != "EMPTY" else _ENV_GROQ_KEY,
+                    type="password",
+                    key="groq_key_input"
+                )
+                if api_key_val:
+                    st.session_state["groq_api_key"] = api_key_val
+                else:
+                    st.session_state["groq_api_key"] = _ENV_GROQ_KEY
+            else:
+                st.session_state["groq_api_key"] = "EMPTY"
+                st.markdown("""
+                <div style='padding: 10px 14px; background-color:#EFF6FF; border:1px solid #BFDBFE; border-radius:8px; font-size:0.8rem; color:#1E3A8A; display:flex; align-items:center; gap:8px;'>
+                    <span>💡 Running via Ollama locally. LLaMA 3.1 8B on CPU/GPU is utilized.</span>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-top:20px'></div>", unsafe_allow_html=True)
 
     # ── Process button ────────────────────────────────────────────────────────
     can_process = (
@@ -977,7 +1034,7 @@ else:
         prompt_tokens_text = f"{comp_tokens['prompt_tokens']:,}" if comp_tokens['prompt_tokens'] > 0 else "0"
         comp_tokens_text = f"{comp_tokens['completion_tokens']:,}" if comp_tokens['completion_tokens'] > 0 else "0"
         
-        col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+        col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
         
         # Token card
         col_p1.markdown(f"""
@@ -1023,6 +1080,19 @@ else:
             <div class='stat-lbl'>🎮 GPU: {gpu_label[:15]}</div>
             <div style='font-size:0.75rem; color:#64748B; margin-top:4px;'>
                 {vram_val}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # LLaMA process memory card
+        llama_ram = sys_metrics.get('llama_ram_gb', 0.0)
+        llama_cpu = sys_metrics.get('llama_cpu', 0.0)
+        col_p5.markdown(f"""
+        <div class='stat-card' style='border-left: 4px solid #8B5CF6;'>
+            <div class='stat-num' style='color:#8B5CF6;'>{llama_ram} GB</div>
+            <div class='stat-lbl'>🦙 LLaMA Memory</div>
+            <div style='font-size:0.75rem; color:#64748B; margin-top:4px;'>
+                CPU Usage: {llama_cpu}%
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1085,8 +1155,16 @@ else:
             expander_title = f"{res['section']}  ·  {status.upper()}"
             
             with st.expander(expander_title, expanded=(status in ["added", "removed"])):
+                tokens = res.get("tokens")
+                token_html = ""
+                if tokens and tokens.get("total_tokens", 0) > 0:
+                    token_html = f"""
+                    <span style='background-color:#E0F7FA; color:#006064; border-radius:12px; padding:3px 10px; font-size:0.75rem; font-weight:600; font-family:monospace; margin-left:8px; border: 1px solid #B2EBF2;'>
+                        ⚡ {tokens['total_tokens']} tokens (In: {tokens['prompt_tokens']} | Out: {tokens['completion_tokens']})
+                    </span>
+                    """
                 st.markdown(
-                    f"<div style='margin-bottom:12px; display:flex; gap:8px;'>{badge_status} {badge_impact}</div>",
+                    f"<div style='margin-bottom:12px; display:flex; gap:8px; align-items:center;'>{badge_status} {badge_impact} {token_html}</div>",
                     unsafe_allow_html=True,
                 )
                 
@@ -1176,8 +1254,24 @@ else:
                 use_container_width=True
             )
         with c_exp2:
-            if st.button("Export PDF Report", key="pdf_export_dummy", use_container_width=True):
-                st.success("📥 Premium PDF report generated successfully!")
+            try:
+                from utils_pdf import generate_pdf_report
+                pdf_data = generate_pdf_report(
+                    results,
+                    st.session_state.get("old_doc_name", "Document A"),
+                    st.session_state.get("new_doc_name", "Document B")
+                )
+                st.download_button(
+                    label="Export PDF Report",
+                    data=pdf_data,
+                    file_name="policy_compliance_report.pdf",
+                    mime="application/pdf",
+                    key="pdf_export_real",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.button("Export PDF Report", key="pdf_export_err", disabled=True, use_container_width=True)
+                st.error(f"Failed to generate PDF: {e}")
         with c_exp3:
             if st.button("Share Report", key="share_dummy", use_container_width=True):
                 st.info("🔗 Report link copied to clipboard.")
@@ -1207,7 +1301,7 @@ else:
         st.markdown(f"""
         <div style='background:#F1F5F9; border-radius:10px; padding:8px 16px; margin-bottom:16px; font-size:0.75rem; color:#475569; display:flex; justify-content:space-between; align-items:center;'>
             <div>💻 CPU: {sys_metrics['cpu_pct']}% | 🧠 RAM: {sys_metrics['ram_pct']}%{gpu_part}</div>
-            <div>⚡ Last Query: {chat_tokens['total_tokens']} tokens</div>
+            <div>⚡ Last Query: {chat_tokens['total_tokens']} tokens (In: {chat_tokens['prompt_tokens']} | Out: {chat_tokens['completion_tokens']})</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1306,16 +1400,16 @@ else:
 
             with st.spinner("🤔 Analyzing policies..."):
                 try:
+                    from config import TokenTrackerCallback
+                    tracker = TokenTrackerCallback()
                     chain = st.session_state["rag_chain"]
-                    from langchain_community.callbacks import get_openai_callback
-                    with get_openai_callback() as cb:
-                        raw = chain.invoke({"query": query_to_send})
-                        answer  = raw.get("result") or raw.get("output") or str(raw)
-                        sources = raw.get("source_documents", [])
+                    raw = chain.invoke({"query": query_to_send}, config={"callbacks": [tracker]})
+                    answer  = raw.get("result") or raw.get("output") or str(raw)
+                    sources = raw.get("source_documents", [])
                     st.session_state["chat_tokens"] = {
-                        "prompt_tokens": cb.prompt_tokens,
-                        "completion_tokens": cb.completion_tokens,
-                        "total_tokens": cb.total_tokens,
+                        "prompt_tokens": tracker.prompt_tokens,
+                        "completion_tokens": tracker.completion_tokens,
+                        "total_tokens": tracker.total_tokens,
                     }
                 except Exception as e:
                     answer  = f"⚠️ Error generating answer: {e}\n\nPlease try rephrasing your question."

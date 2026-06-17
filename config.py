@@ -23,7 +23,7 @@ def get_llm(groq_api_key: str = None):
             raise ValueError("GROQ_API_KEY is not set in environment or session state.")
         return ChatGroq(
             api_key=api_key,
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             temperature=0
         )
     else:
@@ -58,10 +58,11 @@ def get_embeddings():
         )
 
 def get_system_metrics():
-    """Retrieve system CPU, RAM and GPU metrics dynamically."""
+    """Retrieve system CPU, RAM, GPU, and LLaMA process metrics dynamically."""
     import psutil
     import subprocess
     import shutil
+    import os
     
     metrics = {
         "cpu_pct": psutil.cpu_percent(interval=0.1),
@@ -69,8 +70,22 @@ def get_system_metrics():
         "gpu_name": None,
         "gpu_pct": None,
         "vram_pct": None,
-        "raw_gpu": ""
+        "raw_gpu": "",
+        "llama_cpu": 0.0,
+        "llama_ram_gb": 0.0
     }
+    
+    # Track LLaMA/Ollama process usage (e.g. ollama.exe, llama-server.exe)
+    for proc in psutil.process_iter(['name', 'cpu_percent', 'memory_info']):
+        try:
+            pname = proc.info['name'].lower()
+            if 'ollama' in pname or 'llama' in pname:
+                metrics["llama_cpu"] += proc.info['cpu_percent'] or 0.0
+                metrics["llama_ram_gb"] += (proc.info['memory_info'].rss or 0) / (1024 * 1024 * 1024)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    metrics["llama_ram_gb"] = round(metrics["llama_ram_gb"], 2)
+    metrics["llama_cpu"] = round(metrics["llama_cpu"], 1)
     
     # Try AMD ROCm GPU
     if shutil.which("rocm-smi"):
@@ -93,7 +108,6 @@ def get_system_metrics():
             
     # Try NVIDIA GPU (checking standard PATH and common Windows installations)
     else:
-        import os
         nvidia_smi_path = shutil.which("nvidia-smi") or r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
         if os.path.exists(nvidia_smi_path):
             try:
@@ -105,6 +119,70 @@ def get_system_metrics():
                     metrics["vram_pct"] = float(parts[2].strip())
             except Exception:
                 pass
+                
+        # Fallback for Windows Intel/AMD/NVIDIA GPU when specialized smi commands are missing
+        if not metrics["gpu_name"] and os.name == 'nt':
+            try:
+                # Query GPU Name using PowerShell CIM
+                cmd_name = "powershell -Command \"Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name\""
+                res_name = subprocess.run(cmd_name, shell=True, capture_output=True, text=True, timeout=1.5)
+                if res_name.returncode == 0 and res_name.stdout.strip():
+                    metrics["gpu_name"] = res_name.stdout.strip().splitlines()[0]
+                    
+                # Query GPU utilization
+                cmd_util = "powershell -Command \"Get-CimInstance -Query 'SELECT UtilizationPercentage FROM Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine' | Measure-Object -Property UtilizationPercentage -Max | Select-Object -ExpandProperty Maximum\""
+                res_util = subprocess.run(cmd_util, shell=True, capture_output=True, text=True, timeout=1.5)
+                if res_util.returncode == 0 and res_util.stdout.strip():
+                    metrics["gpu_pct"] = float(res_util.stdout.strip())
+                else:
+                    metrics["gpu_pct"] = 0.0
+                    
+                metrics["vram_pct"] = 0.0  # Shared memory used by Intel doesn't map directly to VRAM % in the same way
+            except Exception:
+                pass
             
     return metrics
+
+
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.outputs import LLMResult
+from typing import Any
+
+class TokenTrackerCallback(BaseCallbackHandler):
+    """Callback handler to track prompt, completion, and total tokens from LLMResult across any provider (Groq, Ollama, OpenAI, etc.)."""
+    def __init__(self):
+        super().__init__()
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        try:
+            for generations in response.generations:
+                for gen in generations:
+                    # Try extraction from generation_info
+                    if gen.generation_info and 'token_usage' in gen.generation_info:
+                        usage = gen.generation_info['token_usage']
+                        self.prompt_tokens += usage.get('prompt_tokens', 0)
+                        self.completion_tokens += usage.get('completion_tokens', 0)
+                        self.total_tokens += usage.get('total_tokens', 0)
+                    elif gen.generation_info and 'usage' in gen.generation_info:
+                        usage = gen.generation_info['usage']
+                        self.prompt_tokens += usage.get('prompt_tokens', 0)
+                        self.completion_tokens += usage.get('completion_tokens', 0)
+                        self.total_tokens += usage.get('total_tokens', 0)
+                    # Try extraction from message response_metadata
+                    elif gen.message and hasattr(gen.message, 'response_metadata') and gen.message.response_metadata:
+                        meta = gen.message.response_metadata
+                        if 'token_usage' in meta:
+                            self.prompt_tokens += meta['token_usage'].get('prompt_tokens', 0)
+                            self.completion_tokens += meta['token_usage'].get('completion_tokens', 0)
+                            self.total_tokens += meta['token_usage'].get('total_tokens', 0)
+                        elif 'usage' in meta:
+                            self.prompt_tokens += meta['usage'].get('prompt_tokens', 0)
+                            self.completion_tokens += meta['usage'].get('completion_tokens', 0)
+                            self.total_tokens += meta['usage'].get('total_tokens', 0)
+        except Exception:
+            pass
+
 
