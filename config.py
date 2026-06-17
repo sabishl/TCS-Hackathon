@@ -56,7 +56,7 @@ def get_system_metrics():
     import shutil
     
     metrics = {
-        "cpu_pct": psutil.cpu_percent(interval=None),
+        "cpu_pct": psutil.cpu_percent(interval=0.1),
         "ram_pct": psutil.virtual_memory().percent,
         "gpu_name": None,
         "gpu_pct": None,
@@ -83,17 +83,20 @@ def get_system_metrics():
         except Exception:
             pass
             
-    # Try NVIDIA GPU
-    elif shutil.which("nvidia-smi"):
-        try:
-            res = subprocess.run(["nvidia-smi", "--query-gpu=name,utilization.gpu,utilization.memory", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=1.5)
-            parts = res.stdout.strip().split(",")
-            if len(parts) >= 3:
-                metrics["gpu_name"] = parts[0].strip()
-                metrics["gpu_pct"] = float(parts[1].strip())
-                metrics["vram_pct"] = float(parts[2].strip())
-        except Exception:
-            pass
+    # Try NVIDIA GPU (checking standard PATH and common Windows installations)
+    else:
+        import os
+        nvidia_smi_path = shutil.which("nvidia-smi") or r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+        if os.path.exists(nvidia_smi_path):
+            try:
+                res = subprocess.run([nvidia_smi_path, "--query-gpu=name,utilization.gpu,utilization.memory", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=1.5)
+                parts = res.stdout.strip().split(",")
+                if len(parts) >= 3:
+                    metrics["gpu_name"] = parts[0].strip()
+                    metrics["gpu_pct"] = float(parts[1].strip())
+                    metrics["vram_pct"] = float(parts[2].strip())
+            except Exception:
+                pass
             
     return metrics
 
