@@ -18,7 +18,7 @@ try:
     from langchain.prompts import PromptTemplate
 except ModuleNotFoundError:
     from langchain_classic.prompts import PromptTemplate
-from langchain_groq import ChatGroq
+from config import get_llm
 from langchain_community.vectorstores import Chroma
 
 
@@ -49,11 +49,7 @@ def build_rag_chain(vectorstore: Chroma, groq_api_key: str) -> RetrievalQA:
     Returns:
         RetrievalQA chain (call with {"query": "your question"})
     """
-    llm = ChatGroq(
-        model="llama-3.1-8b-instant",   # LLaMA 3.1 8B Instruct (blueprint spec)
-        temperature=0,
-        api_key=groq_api_key,
-    )
+    llm = get_llm(groq_api_key)
 
     retriever = vectorstore.as_retriever(
         search_type="similarity",

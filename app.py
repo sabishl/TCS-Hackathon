@@ -12,6 +12,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+import config
 _ENV_GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 
 
@@ -217,7 +218,9 @@ st.set_page_config(
 )
 
 # ── Silently initialise API key ────────────────────────────────────────────────
-if _ENV_GROQ_KEY and "groq_api_key" not in st.session_state:
+if config.ENV in ("amd_cloud", "local"):
+    st.session_state["groq_api_key"] = "EMPTY"
+elif _ENV_GROQ_KEY and "groq_api_key" not in st.session_state:
     st.session_state["groq_api_key"] = _ENV_GROQ_KEY
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -646,11 +649,16 @@ html, body, [class*="css"] {
 # ══════════════════════════════════════════════════════════════════════════════
 #  NAV BAR
 # ══════════════════════════════════════════════════════════════════════════════
-system_status_html = (
-    "<span class='system-badge'><span class='system-badge-dot'></span>System Ready</span>"
-    if st.session_state.get("groq_api_key")
-    else "<span style='color:#EF4444;font-weight:600;font-size:0.85rem'>⚠️ Setup Required (Check API Key)</span>"
-)
+if config.ENV == "amd_cloud":
+    system_status_html = "<span class='system-badge'><span class='system-badge-dot'></span>System Ready (AMD Instinct MI300X)</span>"
+elif config.ENV == "local":
+    system_status_html = "<span class='system-badge'><span class='system-badge-dot'></span>System Ready (Ollama Local)</span>"
+else:
+    system_status_html = (
+        "<span class='system-badge'><span class='system-badge-dot'></span>System Ready (Groq Cloud)</span>"
+        if st.session_state.get("groq_api_key") and st.session_state.get("groq_api_key") != "EMPTY"
+        else "<span style='color:#EF4444;font-weight:600;font-size:0.85rem'>⚠️ Setup Required (Check API Key)</span>"
+    )
 st.markdown(f"""
 <div class='nav-bar'>
     <div>
@@ -957,6 +965,68 @@ else:
             </div>
             """, unsafe_allow_html=True)
 
+        # ── Performance and Token Usage Metrics ───────────────────────────────────
+        st.markdown("<div style='margin-top:20px; font-weight:700; font-size:1.1rem; color:#0F172A; font-family:Outfit,sans-serif;'>Hardware & LLM Token Performance</div>", unsafe_allow_html=True)
+        
+        # Get current system resource utilization
+        sys_metrics = config.get_system_metrics()
+        
+        # Get token counts from last comparison
+        comp_tokens = st.session_state.get("comparison_tokens", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        total_tokens_text = f"{comp_tokens['total_tokens']:,}" if comp_tokens['total_tokens'] > 0 else "0"
+        prompt_tokens_text = f"{comp_tokens['prompt_tokens']:,}" if comp_tokens['prompt_tokens'] > 0 else "0"
+        comp_tokens_text = f"{comp_tokens['completion_tokens']:,}" if comp_tokens['completion_tokens'] > 0 else "0"
+        
+        col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+        
+        # Token card
+        col_p1.markdown(f"""
+        <div class='stat-card' style='border-left: 4px solid #06B6D4;'>
+            <div class='stat-num' style='color:#06B6D4;'>{total_tokens_text}</div>
+            <div class='stat-lbl'>⚡ Total LLM Tokens Used</div>
+            <div style='font-size:0.75rem; color:#64748B; margin-top:4px;'>
+                In: {prompt_tokens_text} | Out: {comp_tokens_text}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # CPU card
+        col_p2.markdown(f"""
+        <div class='stat-card' style='border-left: 4px solid #2563EB;'>
+            <div class='stat-num' style='color:#2563EB;'>{sys_metrics['cpu_pct']}%</div>
+            <div class='stat-lbl'>💻 CPU Utilization</div>
+            <div style='font-size:0.75rem; color:#64748B; margin-top:4px;'>
+                Processing load
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # RAM card
+        col_p3.markdown(f"""
+        <div class='stat-card' style='border-left: 4px solid #F59E0B;'>
+            <div class='stat-num' style='color:#F59E0B;'>{sys_metrics['ram_pct']}%</div>
+            <div class='stat-lbl'>🧠 System RAM</div>
+            <div style='font-size:0.75rem; color:#64748B; margin-top:4px;'>
+                Memory load
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # GPU card
+        gpu_label = sys_metrics['gpu_name'] or "No GPU Detected"
+        gpu_val = f"{sys_metrics['gpu_pct']}%" if sys_metrics['gpu_pct'] is not None else "N/A"
+        vram_val = f"VRAM: {sys_metrics['vram_pct']}%" if sys_metrics['vram_pct'] is not None else "No ROCm/CUDA"
+        
+        col_p4.markdown(f"""
+        <div class='stat-card' style='border-left: 4px solid #22C55E;'>
+            <div class='stat-num' style='color:#22C55E;'>{gpu_val}</div>
+            <div class='stat-lbl'>🎮 GPU: {gpu_label[:15]}</div>
+            <div style='font-size:0.75rem; color:#64748B; margin-top:4px;'>
+                {vram_val}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
         st.markdown("<div style='margin-top:40px;'></div>", unsafe_allow_html=True)
 
         # Filters
@@ -1126,6 +1196,21 @@ else:
         if "chat_history" not in st.session_state:
             st.session_state["chat_history"] = []
 
+        # Real-time resource status for Assistant
+        sys_metrics = config.get_system_metrics()
+        chat_tokens = st.session_state.get("chat_tokens", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        
+        gpu_part = ""
+        if sys_metrics["gpu_name"]:
+            gpu_part = f" | 🎮 GPU: {sys_metrics['gpu_pct']}% ({sys_metrics['gpu_name'][:15]})"
+            
+        st.markdown(f"""
+        <div style='background:#F1F5F9; border-radius:10px; padding:8px 16px; margin-bottom:16px; font-size:0.75rem; color:#475569; display:flex; justify-content:space-between; align-items:center;'>
+            <div>💻 CPU: {sys_metrics['cpu_pct']}% | 🧠 RAM: {sys_metrics['ram_pct']}%{gpu_part}</div>
+            <div>⚡ Last Query: {chat_tokens['total_tokens']} tokens</div>
+        </div>
+        """, unsafe_allow_html=True)
+
         # ── Chat window ──────────────────────────────────────────────────────
         if not st.session_state["chat_history"]:
             st.markdown("""
@@ -1222,9 +1307,16 @@ else:
             with st.spinner("🤔 Analyzing policies..."):
                 try:
                     chain = st.session_state["rag_chain"]
-                    raw = chain.invoke({"query": query_to_send})
-                    answer  = raw.get("result") or raw.get("output") or str(raw)
-                    sources = raw.get("source_documents", [])
+                    from langchain_community.callbacks import get_openai_callback
+                    with get_openai_callback() as cb:
+                        raw = chain.invoke({"query": query_to_send})
+                        answer  = raw.get("result") or raw.get("output") or str(raw)
+                        sources = raw.get("source_documents", [])
+                    st.session_state["chat_tokens"] = {
+                        "prompt_tokens": cb.prompt_tokens,
+                        "completion_tokens": cb.completion_tokens,
+                        "total_tokens": cb.total_tokens,
+                    }
                 except Exception as e:
                     answer  = f"⚠️ Error generating answer: {e}\n\nPlease try rephrasing your question."
                     sources = []

@@ -10,12 +10,9 @@ do not bleed into new results.
 import gc
 import os
 
+from typing import Any
 from langchain_community.vectorstores import Chroma
-
-try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except ImportError:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
+from config import get_embeddings
 
 
 PERSIST_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
@@ -23,13 +20,9 @@ COLLECTION = "policy_compare"
 EMBED_MODEL = "all-MiniLM-L6-v2"
 
 
-def _get_embeddings() -> HuggingFaceEmbeddings:
-    """Return a local HuggingFace embedding model instance."""
-    return HuggingFaceEmbeddings(
-        model_name=EMBED_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+def _get_embeddings() -> Any:
+    """Return the embedding model instance depending on environment."""
+    return get_embeddings()
 
 
 def reset_collection() -> None:

@@ -10,15 +10,16 @@ Accuracy choices:
 - Fuzzy-match renamed headings by content similarity before marking sections
   as added or removed.
 """
-
 import json
 import re
+from typing import Any
+import streamlit as st
 
-from langchain_groq import ChatGroq
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine
 
 from chunker import sections_to_full_text
+from config import get_llm
 
 
 SIMILARITY_THRESHOLD = 0.95
@@ -149,8 +150,8 @@ def _parse_json_response(raw: str) -> dict:
     return json.loads(raw)
 
 
-def _build_llm(groq_api_key: str) -> ChatGroq:
-    return ChatGroq(model=LLM_MODEL, temperature=0, api_key=groq_api_key)
+def _build_llm(groq_api_key: str) -> Any:
+    return get_llm(groq_api_key)
 
 
 COMPARE_PROMPT_TEMPLATE = """You are a policy document analyst. Compare these two sections.
@@ -213,7 +214,7 @@ def _find_fuzzy_matches(
 
 
 def _compare_matched_section(
-    llm: ChatGroq,
+    llm: Any,
     heading: str,
     a: dict,
     b: dict,
@@ -299,25 +300,33 @@ def compare_sections(
     skipped = 0
     llm_calls = 0
 
-    for key in exact_keys:
-        a = a_map[key]
-        b = b_map[key]
-        sim = _cosine_sim(_section_text(a, limit=6000), _section_text(b, limit=6000))
-        before = len(results)
-        result = _compare_matched_section(llm, a.get("heading", key), a, b, sim)
-        results.append(result)
-        if result["status"] == "unchanged":
-            skipped += 1
-        else:
+    from langchain_community.callbacks import get_openai_callback
+
+    with get_openai_callback() as cb:
+        for key in exact_keys:
+            a = a_map[key]
+            b = b_map[key]
+            sim = _cosine_sim(_section_text(a, limit=6000), _section_text(b, limit=6000))
+            result = _compare_matched_section(llm, a.get("heading", key), a, b, sim)
+            results.append(result)
+            if result["status"] == "unchanged":
+                skipped += 1
+            else:
+                llm_calls += 1
+
+        for a_key, b_key, sim in fuzzy_matches:
+            a = a_map[a_key]
+            b = b_map[b_key]
+            heading = f"{a.get('heading', a_key)} -> {b.get('heading', b_key)}"
+            result = _compare_matched_section(llm, heading, a, b, sim, heading_changed=True)
+            results.append(result)
             llm_calls += 1
 
-    for a_key, b_key, sim in fuzzy_matches:
-        a = a_map[a_key]
-        b = b_map[b_key]
-        heading = f"{a.get('heading', a_key)} -> {b.get('heading', b_key)}"
-        result = _compare_matched_section(llm, heading, a, b, sim, heading_changed=True)
-        results.append(result)
-        llm_calls += 1
+    st.session_state["comparison_tokens"] = {
+        "prompt_tokens": cb.prompt_tokens,
+        "completion_tokens": cb.completion_tokens,
+        "total_tokens": cb.total_tokens,
+    }
 
     for key in unmatched_b:
         if key in fuzzy_b:
