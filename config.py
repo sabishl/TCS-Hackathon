@@ -8,6 +8,15 @@ ENV = os.getenv("ENV", "local")
 def get_llm(groq_api_key: str = None):
     """Return LLM instance depending on environment."""
     if ENV == "local":
+        # Local Ollama LLaMA 3.1 8B
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            base_url="http://127.0.0.1:11434/v1",
+            api_key="ollama",
+            model="llama3.1:8b",
+            temperature=0
+        )
+    elif ENV == "groq":
         from langchain_groq import ChatGroq
         api_key = groq_api_key or os.getenv("GROQ_API_KEY")
         if not api_key:
@@ -19,13 +28,9 @@ def get_llm(groq_api_key: str = None):
         )
     else:
         # AMD Cloud — vLLM serving LLaMA on MI300X via ROCm
-        try:
-            from langchain_openai import ChatOpenAI
-        except ImportError:
-            from langchain_community.chat_models.openai import ChatOpenAI
-            
+        from langchain_openai import ChatOpenAI
         return ChatOpenAI(
-            base_url="http://localhost:8000/v1",
+            base_url="http://127.0.0.1:8000/v1",
             api_key="EMPTY",
             model="meta-llama/Llama-3.1-8B-Instruct",
             temperature=0
@@ -47,7 +52,10 @@ def get_embeddings():
     else:
         # Both "local" (Ollama local) and "amd_cloud" (Ollama ROCm) use Ollama nomic-embed-text
         from langchain_community.embeddings import OllamaEmbeddings
-        return OllamaEmbeddings(model="nomic-embed-text")
+        return OllamaEmbeddings(
+            base_url="http://127.0.0.1:11434",
+            model="nomic-embed-text"
+        )
 
 def get_system_metrics():
     """Retrieve system CPU, RAM and GPU metrics dynamically."""
